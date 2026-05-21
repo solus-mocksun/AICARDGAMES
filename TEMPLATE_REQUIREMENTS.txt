@@ -1,0 +1,448 @@
+========================================================================
+CARD GAME TABLE — HTML TEMPLATE REQUIREMENTS
+========================================================================
+Build a single self-contained HTML file that acts as a universal
+card game engine. The file should work by dropping it in a browser
+with no server, no install, and no dependencies.
+
+The ONLY thing that changes between games is one JSON config block
+near the top of the file. Everything else — the card engine, the
+rendering, the drag-and-drop, the animations — stays the same.
+
+------------------------------------------------------------------------
+1. FILE STRUCTURE
+------------------------------------------------------------------------
+
+One single .html file. No external files. No CDN links.
+All CSS and JavaScript must be embedded inside the file.
+
+The file has this structure:
+
+  <html>
+    <head>
+      <style>   /* all styles here */   </style>
+    </head>
+    <body>
+      <!-- table and card elements rendered by JS -->
+
+      <script id="game-config" type="application/json">
+        { ...JSON config here — only thing that changes per game... }
+      </script>
+
+      <script>  /* full card engine here */  </script>
+    </body>
+  </html>
+
+The game-config script block is the ONLY section an external AI
+agent will read and replace. Everything outside it is untouched.
+
+------------------------------------------------------------------------
+2. VISUAL DESIGN — THE TABLE
+------------------------------------------------------------------------
+
+The table fills the full browser window (100vw × 100vh).
+Background: dark green felt (#35654d or similar).
+A subtle inner border/frame around the table edge.
+No scrollbars. The game always fits in one screen.
+
+Cards and zones are positioned using percentage-based coordinates
+so the layout scales to any screen size.
+
+------------------------------------------------------------------------
+3. CARDS
+------------------------------------------------------------------------
+
+APPEARANCE:
+  Standard playing card look.
+  White rounded rectangle, ~70px wide × 100px tall (scalable).
+  Face-up: shows rank and suit (top-left and bottom-right corners).
+  Face-down: shows a solid card back pattern (simple repeating design).
+  Suits rendered as text symbols: ♠ ♥ ♦ ♣
+  Red suits (♥ ♦) in red. Black suits (♠ ♣) in black or dark.
+  Face cards (J, Q, K) just show the letter and suit — no artwork needed.
+  Ace shows "A".
+
+  Cards should look clean and readable, not decorative.
+
+DECK:
+  Standard 52-card deck.
+  Support for multiple decks (2-deck, 6-deck etc.) — duplicates handled
+  internally, visually identical.
+  Support for jokers (2 per deck) as an optional config flag.
+  Ranks: A 2 3 4 5 6 7 8 9 10 J Q K
+  Suits: ♠ ♥ ♦ ♣
+
+CARD STATES:
+  face-up   — player can see rank and suit
+  face-down — shows card back only
+  selected  — subtle highlight/glow when clicked
+  dragging  — lifts slightly and follows cursor/touch
+  valid-target — zone glows green when a dragged card can be dropped there
+  invalid   — zone shows red briefly when an illegal drop is attempted
+
+------------------------------------------------------------------------
+4. ZONE SYSTEM
+------------------------------------------------------------------------
+
+Zones are regions on the table where cards live.
+Every card is always in exactly one zone.
+
+ZONE TYPES (all must be supported):
+
+  pile
+    Cards stack directly on top of each other.
+    Only the top card is visible.
+    Example uses: draw deck, discard pile, stock pile.
+
+  spread
+    Cards fan out horizontally so all are visible.
+    Overlap if more than ~7 cards.
+    Example uses: player hand, community cards.
+
+  fan
+    Cards fan at an angle (like holding cards in your hand).
+    Used for the human player's hand for a natural look.
+    Example uses: human player hand display.
+
+  row
+    Cards placed in a horizontal line, fully spaced apart.
+    Example uses: foundation piles, tableau columns.
+
+  grid
+    Cards placed in a rectangular grid.
+    Rows and columns count come from config.
+    Example uses: memory/matching games.
+
+ZONE PROPERTIES (each zone in the config has these):
+  id         — unique string name
+  type       — pile / spread / fan / row / grid
+  label      — optional text shown above or below the zone
+               (e.g. "Dealer", "Player", "Foundation")
+  position   — {x: "50%", y: "25%"} percentage of table width/height
+  face       — "up" (all cards face-up)
+                "down" (all cards face-down)
+                "mixed" (bottom cards down, top card up)
+                "hand" (all face-up, only visible to owning player)
+  max_cards  — optional cap on how many cards this zone holds
+  visible_count — for pile type: how many cards to show fanned behind
+                  the top card to indicate pile depth (0-3)
+
+ZONE VISUALS:
+  Empty zone shows a faint dashed rounded rectangle placeholder.
+  Label text is small, muted, centered above/below the zone.
+  Zone highlights green when a valid card is dragged over it.
+
+------------------------------------------------------------------------
+5. DRAG AND DROP
+------------------------------------------------------------------------
+
+Cards can be dragged from one zone to another.
+Works on both mouse (desktop) and touch (mobile/tablet).
+
+Drag behavior:
+  - Click/tap a card to select it (highlights it).
+  - Drag it to a target zone.
+  - If the move is valid per the config rules: card moves, plays
+    a soft placement sound (optional, no sound library needed —
+    can be omitted).
+  - If the move is invalid: card snaps back to original position,
+    zone flashes red briefly.
+
+Only the top card of a pile can be dragged.
+In a spread/fan zone, any card can be dragged (and cards beneath
+it in sequence move with it if the config allows).
+
+A "move stack" option per valid_move rule controls whether moving
+a card also moves all cards below it in a spread zone.
+
+------------------------------------------------------------------------
+6. GAME CONFIG SCHEMA
+------------------------------------------------------------------------
+
+This is the exact JSON schema the config block must support.
+All fields listed are required unless marked (optional).
+
+{
+  "game_name": string,
+  "decks": integer (1, 2, 4, 6, 8),
+  "include_jokers": boolean,
+  "players": integer (1 to 6),
+
+  "zones": [
+    {
+      "id": string,
+      "type": "pile" | "spread" | "fan" | "row" | "grid",
+      "label": string (optional),
+      "position": { "x": "0%-100%", "y": "0%-100%" },
+      "face": "up" | "down" | "mixed" | "hand",
+      "max_cards": integer (optional),
+      "visible_count": integer 0-3 (optional, default 1)
+    }
+  ],
+
+  "deal": [
+    {
+      "to": zone_id,
+      "cards": integer | "remaining",
+      "face": "up" | "down"
+    }
+  ],
+
+  "valid_moves": [
+    {
+      "from": zone_id | "any",
+      "to": zone_id | "any",
+      "rule": string (see rule vocabulary below),
+      "move_stack": boolean (optional, default false)
+    }
+  ],
+
+  "win_condition": string (see win condition vocabulary below),
+
+  "actions": [
+    {
+      "label": string (button label shown on table),
+      "trigger": string (e.g. "flip_stock", "deal_new", "end_turn"),
+      "position": { "x": "0%-100%", "y": "0%-100%" }
+    }
+  ],
+
+  "category_hint": string (optional, for AI use only)
+}
+
+RULE VOCABULARY (valid strings for valid_moves.rule):
+  "any"                         — any card can move
+  "top_card_only"               — only top card of source
+  "same_suit"                   — card must match suit of top card in target
+  "same_rank"                   — card must match rank of top card in target
+  "ascending_same_suit"         — card rank must be 1 higher, same suit
+  "descending_same_suit"        — card rank must be 1 lower, same suit
+  "descending_alternating_color"— rank 1 lower, opposite color
+  "ascending_any_suit"          — rank 1 higher, any suit
+  "empty_zone_only"             — only legal if target zone is empty
+  "king_to_empty"               — only Kings can go to empty zones
+  "ace_to_empty"                — only Aces can start this zone
+  "higher_rank"                 — any card of strictly higher rank
+  "lower_rank"                  — any card of strictly lower rank
+  "no_rule"                     — always valid (drag anywhere)
+
+WIN CONDITION VOCABULARY:
+  "all_cards_in_foundation"     — all cards in zones marked foundation
+  "empty_hand"                  — player hand zone is empty
+  "highest_score"               — player with most points wins
+  "lowest_score"                — player with fewest points wins
+  "target_score"                — first to reach score in config
+  "all_foundations_complete"    — all foundation zones have 13 cards
+  "no_valid_moves"              — game ends when no moves possible
+
+------------------------------------------------------------------------
+7. ACTION BUTTONS
+------------------------------------------------------------------------
+
+Some games need buttons on the table (not card drags):
+  "Draw card"
+  "End turn"
+  "Flip stock"
+  "Deal new hand"
+
+Buttons are defined in the config "actions" array.
+Each renders as a small labeled button at the specified position.
+Clicking sends a message to the websocket (see section 9).
+
+------------------------------------------------------------------------
+8. GAME STATE
+------------------------------------------------------------------------
+
+The engine must track and expose the full game state at all times:
+
+state = {
+  zones: {
+    zone_id: [
+      { rank: "A", suit: "♠", face: "up" },
+      { rank: "K", suit: "♥", face: "down" },
+      ...
+    ]
+  },
+  current_player: integer,
+  turn: integer,
+  scores: { player_0: 0, player_1: 0, ... },
+  game_over: boolean,
+  winner: integer | null
+}
+
+This state object is available at window.GAME_STATE for external
+access (used by the websocket connection to the Python AI).
+
+------------------------------------------------------------------------
+9. WEBSOCKET CONNECTION (AI BRIDGE)
+------------------------------------------------------------------------
+
+The template must include a websocket client that connects to
+ws://localhost:8765 when the page loads.
+
+If the websocket is not available, the game still works fully
+as a human-playable game. The websocket is optional.
+
+When connected, the following messages are sent/received:
+
+SENT by browser → Python:
+  Every time the game state changes:
+  {
+    "type": "state_update",
+    "state": { ...full GAME_STATE object... },
+    "legal_moves": [ {"from": zone_id, "to": zone_id}, ... ]
+  }
+
+  When a button action is triggered:
+  {
+    "type": "action",
+    "trigger": "flip_stock"
+  }
+
+RECEIVED by browser ← Python:
+  When the AI decides its move:
+  {
+    "type": "move",
+    "from": zone_id,
+    "to": zone_id,
+    "card_index": integer (which card in the from zone, 0=top)
+  }
+
+  When the AI triggers an action button:
+  {
+    "type": "action",
+    "trigger": "end_turn"
+  }
+
+The browser animates the move received from Python exactly as if
+a human had dragged the card.
+
+------------------------------------------------------------------------
+10. DEAL ANIMATION
+------------------------------------------------------------------------
+
+On page load (or when "Deal" is triggered):
+  Cards deal one at a time from a central position to their zones.
+  Each card slides to its destination with a short delay between cards.
+  Face-down cards flip face-up during the slide if their final
+  state is face-up.
+  Total deal animation should complete in under 2 seconds.
+
+------------------------------------------------------------------------
+11. WIN / LOSE DETECTION
+------------------------------------------------------------------------
+
+After every move, the engine checks the win_condition from config.
+If triggered:
+  - A centered overlay appears: "You Win!" or player name wins.
+  - A "New Game" button resets and re-deals.
+  - A "win" message is sent over the websocket.
+
+------------------------------------------------------------------------
+12. DEFAULT CONFIG (for testing — Blackjack)
+------------------------------------------------------------------------
+
+The template ships with this default config so it works immediately
+when opened in a browser without any modification:
+
+{
+  "game_name": "Blackjack",
+  "decks": 1,
+  "include_jokers": false,
+  "players": 1,
+
+  "zones": [
+    {
+      "id": "dealer_hand",
+      "label": "Dealer",
+      "type": "spread",
+      "position": {"x": "50%", "y": "22%"},
+      "face": "mixed"
+    },
+    {
+      "id": "player_hand",
+      "label": "Your Hand",
+      "type": "fan",
+      "position": {"x": "50%", "y": "72%"},
+      "face": "up"
+    },
+    {
+      "id": "deck",
+      "label": "Deck",
+      "type": "pile",
+      "position": {"x": "15%", "y": "50%"},
+      "face": "down",
+      "visible_count": 2
+    }
+  ],
+
+  "deal": [
+    {"to": "player_hand", "cards": 1, "face": "up"},
+    {"to": "dealer_hand", "cards": 1, "face": "up"},
+    {"to": "player_hand", "cards": 1, "face": "up"},
+    {"to": "dealer_hand", "cards": 1, "face": "down"}
+  ],
+
+  "valid_moves": [
+    {"from": "deck", "to": "player_hand", "rule": "any"}
+  ],
+
+  "actions": [
+    {
+      "label": "Hit",
+      "trigger": "hit",
+      "position": {"x": "38%", "y": "90%"}
+    },
+    {
+      "label": "Stand",
+      "trigger": "stand",
+      "position": {"x": "52%", "y": "90%"}
+    },
+    {
+      "label": "New Game",
+      "trigger": "deal_new",
+      "position": {"x": "85%", "y": "90%"}
+    }
+  ],
+
+  "win_condition": "highest_score",
+  "category_hint": "gambling"
+}
+
+------------------------------------------------------------------------
+13. WHAT THE AI AGENT WILL DO WITH THIS FILE
+------------------------------------------------------------------------
+
+When an external AI agent builds a new game from a rulebook:
+
+  1. Read the rulebook text
+  2. Open template.html
+  3. Find the <script id="game-config"> block
+  4. Replace ONLY the JSON inside that block
+  5. Save as new_game_name.html
+
+Nothing else in the file is touched.
+The AI does not write CSS. It does not write JavaScript.
+It only fills in the JSON config.
+
+------------------------------------------------------------------------
+14. WHAT TO KEEP IN MIND WHILE BUILDING
+------------------------------------------------------------------------
+
+  - The rule vocabulary in valid_moves covers the most common cases.
+    Build the rule checker as a switch/if-else on those string values.
+    New rules can be added later without restructuring.
+
+  - Position percentages let the AI place zones anywhere by just
+    changing numbers. Keep layout logic in the config, not hardcoded.
+
+  - The websocket bridge is the connection point to the Python AI.
+    Keep the message format simple — just zone IDs and card indices.
+    The Python side handles all the strategy; the HTML just animates.
+
+  - Test with the default Blackjack config first to verify everything
+    works before adding more zone types or rules.
+
+------------------------------------------------------------------------
+END OF REQUIREMENTS
+------------------------------------------------------------------------
