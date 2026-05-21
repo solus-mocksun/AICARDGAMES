@@ -16,5 +16,13 @@ tqdm>=4.66
 rich>=13.0
 einops>=0.8.0
 
+# Environment builder (rulebook → game HTML)
+anthropic>=0.40.0
+
+# PvP server (built next)
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+websockets>=12.0
+
 # Dev / testing
 pytest>=8.0
