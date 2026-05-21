@@ -41,9 +41,10 @@ agent will read and replace. Everything outside it is untouched.
 ------------------------------------------------------------------------
 
 The table fills the full browser window (100vw × 100vh).
-Background: dark green felt (#35654d or similar).
-A subtle inner border/frame around the table edge.
+Background: near-black dark gray (#141414).
+A subtle inner border/frame around the table edge in dark gray (#2a2a2a).
 No scrollbars. The game always fits in one screen.
+No green. No color. Strictly black, white, and gray only.
 
 Cards and zones are positioned using percentage-based coordinates
 so the layout scales to any screen size.
@@ -53,16 +54,19 @@ so the layout scales to any screen size.
 ------------------------------------------------------------------------
 
 APPEARANCE:
-  Standard playing card look.
-  White rounded rectangle, ~70px wide × 100px tall (scalable).
-  Face-up: shows rank and suit (top-left and bottom-right corners).
-  Face-down: shows a solid card back pattern (simple repeating design).
+  Minimalist card look. No decoration, no gradients, no shadows.
+  White (#ffffff) rounded rectangle, ~70px wide × 100px tall (scalable).
+  Thin border: 1px solid #cccccc.
+  Face-up: shows rank and suit in top-left and bottom-right corners.
+  Face-down: flat gray (#888888) back, no pattern, no texture.
   Suits rendered as text symbols: ♠ ♥ ♦ ♣
-  Red suits (♥ ♦) in red. Black suits (♠ ♣) in black or dark.
-  Face cards (J, Q, K) just show the letter and suit — no artwork needed.
+  Black suits (♠ ♣): black text (#111111).
+  Red suits (♥ ♦): dark red (#cc0000) — the ONLY color allowed.
+  Face cards (J, Q, K) just show the letter and suit — no artwork.
   Ace shows "A".
 
-  Cards should look clean and readable, not decorative.
+  Cards must look clean, stark, and minimal. No drop shadows.
+  Font: monospace or a clean sans-serif. Bold rank text.
 
 DECK:
   Standard 52-card deck.
@@ -75,10 +79,10 @@ DECK:
 CARD STATES:
   face-up   — player can see rank and suit
   face-down — shows card back only
-  selected  — subtle highlight/glow when clicked
-  dragging  — lifts slightly and follows cursor/touch
-  valid-target — zone glows green when a dragged card can be dropped there
-  invalid   — zone shows red briefly when an illegal drop is attempted
+  selected  — thin white outline (#ffffff) added around the card
+  dragging  — card becomes slightly transparent (0.85 opacity)
+  valid-target — zone border turns white (#ffffff) when card dragged over it
+  invalid   — zone border flashes gray (#666666) briefly, card snaps back
 
 ------------------------------------------------------------------------
 4. ZONE SYSTEM
@@ -128,9 +132,10 @@ ZONE PROPERTIES (each zone in the config has these):
                   the top card to indicate pile depth (0-3)
 
 ZONE VISUALS:
-  Empty zone shows a faint dashed rounded rectangle placeholder.
-  Label text is small, muted, centered above/below the zone.
-  Zone highlights green when a valid card is dragged over it.
+  Empty zone shows a dashed rounded rectangle in dark gray (#2e2e2e).
+  Label text is small, gray (#888888), centered above the zone.
+  Zone border turns white (#ffffff) when a valid card is dragged over it.
+  No green anywhere. No colored zone backgrounds.
 
 ------------------------------------------------------------------------
 5. DRAG AND DROP
@@ -249,6 +254,15 @@ Buttons are defined in the config "actions" array.
 Each renders as a small labeled button at the specified position.
 Clicking sends a message to the websocket (see section 9).
 
+BUTTON STYLE:
+  Background: transparent.
+  Border: 1px solid #555555.
+  Text: gray (#aaaaaa), uppercase, small font, letter-spacing.
+  Hover: border and text turn white (#ffffff).
+  Active/pressed: background #222222.
+  No rounded corners, no shadows, no colored backgrounds.
+  Minimal and flat — looks like a terminal command, not a UI widget.
+
 ------------------------------------------------------------------------
 8. GAME STATE
 ------------------------------------------------------------------------
@@ -334,8 +348,11 @@ On page load (or when "Deal" is triggered):
 
 After every move, the engine checks the win_condition from config.
 If triggered:
-  - A centered overlay appears: "You Win!" or player name wins.
-  - A "New Game" button resets and re-deals.
+  - A centered overlay appears with dark semi-transparent background
+    (#000000 at 80% opacity).
+  - Text: white, large, clean. e.g. "YOU WIN" or "PLAYER 1 WINS".
+    No exclamation marks, no animations, no confetti.
+  - A "NEW GAME" button (matching the flat button style) resets and re-deals.
   - A "win" message is sent over the websocket.
 
 ------------------------------------------------------------------------
