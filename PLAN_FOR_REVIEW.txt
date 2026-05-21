@@ -1,0 +1,455 @@
+========================================================================
+AI CARD GAME SYSTEM — IMPLEMENTATION PLAN FOR REVIEW
+========================================================================
+Last updated: 2026-05-20
+Repo: https://github.com/solus-mocksun/AICARDGAMES
+Hardware target: NVIDIA RTX 5070 (~12GB VRAM)
+
+This document covers the current design decisions in the areas most
+likely to need expert input: game abstractions, reward structures,
+action representations, strategic assumptions, and game selection.
+Please mark anything that seems wrong, naive, or missing.
+
+------------------------------------------------------------------------
+1. GOAL
+------------------------------------------------------------------------
+
+Build one AI system that can play card games across 6 categories.
+The AI should:
+  - Learn shared "card game intuition" that transfers between games
+  - Master specific rules via small per-game adapter layers
+  - Adapt to a new game it has never seen faster than learning from zero
+  - Eventually beat a casual human player at one game per category
+
+The 6 categories (and which games we train on):
+  1. Gambling/Casino     — Blackjack, Poker (Texas Hold'em), Baccarat
+  2. Matching/Shedding   — Crazy Eights, UNO, Go Fish
+  3. Trick-Taking        — Hearts, Spades, Euchre
+  4. Melding             — Gin Rummy, Rummy 500, Canasta
+  5. Climbing            — President, Big Two, Tichu
+  6. Solitaire           — FreeCell, Klondike, Spider
+
+Excluded: Collectible/custom-deck games (MTG, Pokemon TCG) — too complex
+for this scope.
+
+------------------------------------------------------------------------
+2. OVERALL ARCHITECTURE (BRIEF)
+------------------------------------------------------------------------
+
+Every game feeds into the same pipeline:
+
+  Game state
+      ↓
+  State Encoder  →  688-dimensional float vector (fixed size)
+      ↓
+  Transformer (26M params, shared within category)
+      ↓
+  LoRA Adapter (~0.52M params, one per specific game)
+      ↓
+  Policy Head → which action to take (out of 512 slots)
+  Value Head  → how good is this position? (used for training)
+
+Training algorithm: PPO (Proximal Policy Optimization)
+  — a standard reinforcement learning algorithm.
+  — the AI plays millions of games against itself and past versions,
+    improving based on wins/losses.
+
+------------------------------------------------------------------------
+3. GAME ABSTRACTIONS
+------------------------------------------------------------------------
+[ PROFESSOR: This section is the most likely to have fundamental problems ]
+
+The core challenge: every game has a different state structure.
+We convert every game into the same 688-dimensional vector.
+
+CARD PLANES (624 dimensions = 12 planes × 52 card slots):
+  Each plane is a binary vector saying which cards are in that location.
+
+  Plane 0  — my hand (cards I hold)
+  Plane 1  — face-up #1 (top discard / community card 1 / current trick)
+  Plane 2  — face-up #2
+  Plane 3  — face-up #3
+  Plane 4  — face-up #4
+  Plane 5  — face-up #5
+  Plane 6  — opponent 0's known cards
+  Plane 7  — opponent 1's known cards
+  Plane 8  — opponent 2's known cards
+  Plane 9  — opponent 3's known cards
+  Plane 10 — opponent 4's known cards
+  Plane 11 — unknown cards (computed automatically as: full deck minus all known)
+
+SCALAR FEATURES (64 dimensions):
+  Which category this is (one-hot, 6 values)
+  Which game this is (one-hot, 20 values)
+  Which player I am (one-hot, 6 values)
+  Number of players (normalized)
+  Hand size (normalized)
+  Remaining deck size (normalized)
+  My score (normalized)
+  Opponent scores × 5 (normalized)
+  My chip stack (normalized, for gambling games)
+  Pot size (normalized)
+  Current bet to call (normalized)
+  Game phase (one-hot: 4 phases — e.g. preflop/flop/turn/river)
+  Tricks taken by me (normalized)
+  Tricks taken by opponents × 5 (normalized)
+  Trump suit (one-hot, 4 values)
+  Cards to draw (normalized)
+  Special action pending (boolean)
+  Round number (normalized)
+  Step number (normalized)
+
+KNOWN WEAKNESSES in this encoding:
+  - The "face-up" planes mean different things in different games.
+    In Poker they are community cards. In Hearts they are trick cards.
+    In Rummy they are the discard pile top. The model must learn from
+    the game-ID embedding what the planes mean.
+  - Trick-taking games have a temporal structure (who played what in
+    what order matters). The current encoding only shows what was played,
+    not the order within a trick.
+  - In Rummy/Melding, the discard pile history beyond the top card is
+    important (what was discarded several turns ago affects strategy).
+    We only show the top 5 discards.
+  - In climbing games (Big Two), the previously played combo type
+    (single / pair / triple / five-card) matters and isn't explicitly
+    encoded.
+  - In partnership games (Hearts, Spades), whose partner is whom
+    isn't explicitly encoded — only player positions are.
+
+QUESTIONS FOR THE PROFESSOR:
+  Q1. For trick-taking games, is the order cards were played in a trick
+      strategically important? (e.g. does it matter that player 2 played
+      before player 3 in the same trick?)
+  Q2. In Rummy/Gin, how far back does discard pile history matter
+      strategically? We show the top 5 — is that enough?
+  Q3. In partnership games, is tracking "this player is my partner"
+      separately from "this player is seat 2" important?
+  Q4. Are there fundamental game-state features we've completely missed
+      for any of the 18 games listed?
+
+------------------------------------------------------------------------
+4. ACTION REPRESENTATIONS
+------------------------------------------------------------------------
+[ PROFESSOR: Are the action groupings strategically sensible? ]
+
+All actions map to slots in a fixed 512-slot array.
+Illegal actions are blocked by a mask (the AI can never pick them).
+
+Slot allocation by category:
+  Slots 0–63:   Gambling
+    0=fold, 1=call/check, 2=raise small, 3=raise medium,
+    4=raise large, 5=all-in,
+    10=hit, 11=stand, 12=double down, 13=split,
+    20=bet player, 21=bet banker, 22=bet tie
+
+  Slots 64–127: Matching/Shedding
+    64–115: play card by index (52 cards)
+    116=draw from deck, 117=pass/skip
+
+  Slots 128–191: Trick-Taking
+    128–179: play card by index (52 cards)
+    180=pass (for bidding phases)
+
+  Slots 192–255: Melding
+    192–253: discard card by index (52 cards)
+    200=draw from deck, 201=draw from discard pile
+    254=knock (gin rummy), 255=declare gin
+
+  Slots 256–319: Climbing
+    256=pass
+    257–308: play single card by index (52 cards)
+    309–383: play combo (lead card identifies combo)
+
+  Slots 320–488: Solitaire
+    Encodes (from_location, to_location) pairs
+    13 locations × 13 locations = 169 possible moves
+
+KNOWN WEAKNESSES:
+  - Poker bet sizing is extremely coarse: only 4 options (call, small
+    raise, pot raise, all-in). Real poker strategy requires nuanced
+    sizing. We may be crippling the poker AI by design.
+  - In climbing games, "combos" are identified only by their lead card.
+    A hand might have multiple valid combos starting with the same card
+    (e.g. pair of Aces vs. a straight containing Ace). This is ambiguous.
+  - In Rummy 500 and Canasta, "lay off on existing melds" is a separate
+    class of action not well-represented in the current scheme.
+  - In Spades/Euchre, bidding is represented as a single "pass" slot.
+    The full range of bids (1–13 tricks, nil, blind nil) isn't encoded.
+  - In Tichu, the "call Tichu" / "call Grand Tichu" are high-stakes
+    declarations that aren't separately represented.
+
+QUESTIONS FOR THE PROFESSOR:
+  Q5. For poker, does bet sizing matter enough that a coarse 4-action
+      representation would make the AI fundamentally unable to play
+      well? What's the minimum number of sizing options?
+  Q6. In climbing games, how should combos be represented? Should we
+      enumerate all valid combos from the current hand as separate
+      actions, or is the lead-card shorthand acceptable?
+  Q7. For bidding games (Spades, Euchre, Tichu), what's the minimum
+      bid representation that captures strategic depth?
+  Q8. Are there entire action types we've omitted for any game?
+
+------------------------------------------------------------------------
+5. REWARD STRUCTURES
+------------------------------------------------------------------------
+[ PROFESSOR: This is probably the biggest risk area ]
+
+CURRENT APPROACH:
+  All rewards are given at the END of a game only (sparse rewards).
+  Intermediate steps get reward = 0.
+  Terminal reward values:
+    Blackjack:  +1 win, 0 push, -1 loss (+1.5 for blackjack)
+    Poker:      chip gain/loss normalized to (-1, +1)
+    Baccarat:   +1/+0.95/+8 win, -1 loss (matching house payouts)
+    Hearts:     negative of points taken, normalized
+    Spades:     based on bags/tricks relative to bid
+    Gin Rummy:  +1 win, -1 loss
+    Solitaire:  +1 complete, 0 fail (or shaped — see below)
+
+SHAPED REWARDS (added for games where sparse reward is too slow):
+  These intermediate signals help the AI learn faster but are
+  annealed (gradually reduced to 0) over the first 20M training steps
+  so the AI learns the true objective, not just the shaped proxy.
+
+  Solitaire:   +0.1 per card moved to foundation, +10 per completed suit
+  Hearts:      -0.1 per point card taken during play
+  Spades:      small reward for tricks matching bid trajectory
+  Melding:     +0.05 per card melded / laid off
+
+KNOWN WEAKNESSES:
+  - Hearts scoring has a special rule: "Shooting the Moon"
+    (taking ALL hearts + queen of spades gives you 0 points, others +26).
+    Our current reward structure doesn't explicitly incentivize or
+    disincentivize moon attempts. The AI may never discover this.
+  - In Spades, "bags" (overtricks) accumulate and eventually penalize
+    you. This long-horizon penalty is hard to learn from sparse rewards.
+  - In partnership games, the reward for one agent's action should
+    partly reflect the partner's outcome, but currently each agent
+    only sees its own reward.
+  - Canasta has a very complex scoring system (bonus melds, going out,
+    red 3s, frozen pile penalties). Reducing this to a single terminal
+    reward loses most of the strategic signal.
+  - In poker, the correct strategic goal isn't just "win this hand" —
+    it's "maximize chips over many hands." Our current episodic reward
+    may not capture this correctly.
+  - Solitaire: some Klondike deals are mathematically unwinnable.
+    Rewarding only wins may cause the AI to learn despair on hard deals
+    instead of best-effort play.
+
+QUESTIONS FOR THE PROFESSOR:
+  Q9.  For Hearts, should "shooting the moon" have an explicit bonus
+       reward signal, or should we let the AI discover it naturally?
+  Q10. In partnership games, how should the reward be split between
+       partners? Equal share? Weighted by contribution?
+  Q11. For Spades, is the "bags" penalty something that needs a
+       shaped intermediate reward, or can PPO learn it from the
+       terminal score alone given enough training?
+  Q12. For games with very complex scoring (Canasta, Tichu), what's
+       the simplest reward signal that still produces strategic play?
+  Q13. Are there games in our list where the stated win condition and
+       the strategic goal are meaningfully different?
+
+------------------------------------------------------------------------
+6. STRATEGIC ASSUMPTIONS BAKED INTO THE DESIGN
+------------------------------------------------------------------------
+
+The following assumptions are built into the architecture. If any are
+wrong, they could require significant redesign.
+
+ASSUMPTION A: Category structure reflects strategic similarity
+  We group games into 6 categories and train one shared model per
+  category, betting that games in the same category share learnable
+  strategic patterns. For example: Hearts, Spades, and Euchre should
+  all benefit from learning "trick-taking intuition."
+
+  RISK: The categories might be too broad. Euchre (5-card, trump-heavy,
+  partnership) may share little with Hearts (13-card, no trump, avoid
+  points). If so, training them together hurts rather than helps.
+
+ASSUMPTION B: A fixed observation vector can represent all games fairly
+  We force every game into the same 688-dim vector. Games with unusual
+  state structures (Canasta's frozen pile, Tichu's special cards,
+  Solitaire's tableau columns) must be "squeezed" into this format.
+
+  RISK: Critical information may be lost or misrepresented in the
+  compression. The model may behave correctly on games that fit the
+  format naturally (Blackjack, Hearts) and poorly on others (Canasta).
+
+ASSUMPTION C: 512 actions are enough for all games
+  We allocate action slots per category. The largest game (Big Two)
+  has ~360 possible combos from a full hand.
+
+  RISK: We haven't fully enumerated Big Two combos or Tichu combos.
+  The number may exceed our allocation in edge cases.
+
+ASSUMPTION D: Winning is the right optimization target
+  We train to maximize wins (positive terminal reward). But in some
+  games, minimizing losses is strategically different from maximizing
+  wins (e.g. in Hearts, aggressive moon-shooting has high variance).
+
+ASSUMPTION E: Self-play produces useful opponents
+  The AI trains against past versions of itself. This works well when
+  the game has a dominant strategy that can be discovered iteratively.
+  It works poorly when the game requires coordinated partnership play
+  (Hearts, Spades) because the AI's partner is also an AI opponent
+  from the pool, not a cooperative agent.
+
+QUESTIONS FOR THE PROFESSOR:
+  Q14. Do you think the 6 category groupings make sense strategically?
+       Would you group any games differently?
+  Q15. Which games in our list have the most "unusual" state structures
+       that would be hardest to squeeze into a uniform representation?
+  Q16. For partnership games trained with self-play, is the AI likely
+       to learn cooperative strategy, or will it play selfishly?
+  Q17. Are there games in the list where the "win the game" objective
+       is genuinely the wrong thing to optimize for?
+
+------------------------------------------------------------------------
+7. GAME SELECTION AND TRANSFER ASSUMPTIONS
+------------------------------------------------------------------------
+
+The hypothesis is that training on 3 games per category teaches the
+model enough "category intuition" that it can adapt to a 4th game in
+the same category faster than learning from scratch.
+
+For this to work, the games within a category must actually share
+transferable strategic patterns.
+
+Our transfer assumptions by category:
+
+  Gambling: All 3 games involve probabilistic card strength evaluation
+    and bet/fold decisions. CONCERN: Baccarat has almost no strategy
+    (just 3 bets), so it contributes little to shared learning.
+
+  Matching/Shedding: All 3 games involve matching cards by rank/suit
+    and hand-reduction. CONCERN: Go Fish is purely rank-based asking,
+    very different from UNO's color+number matching.
+
+  Trick-Taking: All 3 games involve following suit and winning tricks.
+    This category probably has the best transfer potential.
+    CONCERN: Euchre's 24-card deck and mandatory trump may make card
+    value intuitions from Hearts/Spades misleading.
+
+  Melding: All 3 games involve forming sets and runs.
+    CONCERN: Canasta (2-deck, wild cards, partnership) is dramatically
+    more complex than Gin Rummy (2-player, 1-deck, simple knocking).
+    They may share surface structure but not strategic depth.
+
+  Climbing: All 3 games involve playing higher combinations to beat
+    the table. Good transfer potential within the category.
+    CONCERN: Tichu has 4 special cards with unique effects (Dragon,
+    Phoenix, Mahjong, Dog) that don't exist in Big Two or President.
+
+  Solitaire: All 3 games involve moving cards to build foundations.
+    CONCERN: FreeCell (fully observable) and Klondike (partially
+    observable) are fundamentally different problem types. Learning
+    FreeCell strategy might not transfer to Klondike at all.
+
+QUESTIONS FOR THE PROFESSOR:
+  Q18. Within each category, which game pairs do you think have the
+       most genuine strategic overlap? Which have the least?
+  Q19. Is there a game in our list you would replace with a better
+       representative of its category?
+  Q20. Are there any important card game categories we've completely
+       missed that would add strategic diversity?
+  Q21. For Solitaire specifically — does it make sense to group
+       FreeCell (pure planning) with Klondike (luck + planning)?
+
+------------------------------------------------------------------------
+8. WHAT'S BUILT SO FAR
+------------------------------------------------------------------------
+
+Phase 0 (complete):
+  - Core data structures: Card, Deck, Hand (52-card encoding)
+  - Unified 688-dim state encoder base class
+  - Unified 512-slot action space with per-game mappers
+  - Base environment class (all 18 games will inherit from it)
+  - Game registry (lookup table for all 18 games)
+  - 70 passing tests
+
+Phase 1 (complete):
+  - Transformer backbone (26M parameters, 8 layers, 512-dim)
+  - LoRA adapters (~0.52M parameters per game)
+  - Policy and value heads
+  - Full agent with act/evaluate interface
+  - Blackjack, Poker, Baccarat environments (Poker/BJ wrap RLCard library)
+  - Blackjack Basic Strategy agent (benchmark: the AI must match this)
+  - PPO training loop (custom — not a library)
+  - Self-play opponent pool with recency weighting
+  - Curriculum scheduler for all 6 categories
+  - Reward normalizer (per-game running statistics)
+  - ELO rating system (Random=800, Heuristic=1000, Strong=1200 anchors)
+  - Training entry point: python scripts/train_category.py --category gambling
+  - 103 passing tests
+
+Not yet built (Phases 2–7):
+  - Matching/Shedding environments (UNO, Crazy Eights, Go Fish)
+  - Trick-taking environments (Hearts, Spades, Euchre)
+  - Melding environments (Gin Rummy, Rummy 500, Canasta)
+  - Climbing environments (President, Big Two, Tichu)
+  - Solitaire environments (FreeCell, Klondike, Spider)
+  - Heuristic agents for non-gambling games
+  - Human play CLI interface
+  - Generalization evaluation (hold-out game test)
+
+------------------------------------------------------------------------
+9. KEY NUMBERS
+------------------------------------------------------------------------
+
+Model size:
+  Backbone (shared per category):   ~26.1M parameters
+  LoRA adapter per game:            ~0.52M parameters
+  Policy head:                      ~0.13M parameters
+  Value head:                       ~0.13M parameters
+  Total with all 18 adapters:       ~35.5M parameters
+
+Training estimate on RTX 5070:
+  Gambling category:     6–8 hours   (60M steps)
+  Matching/Shedding:     8–12 hours  (80M steps)
+  Trick-Taking:          6–10 hours  (100M steps, OpenSpiel C++ fast)
+  Melding:               8–12 hours  (80M steps)
+  Climbing:              8–12 hours  (100M steps)
+  Solitaire:             4–6 hours   (50M steps)
+  Total:                 ~40–60 hours wall-clock
+
+State vector: 688 dimensions
+Action space: 512 slots
+
+------------------------------------------------------------------------
+10. OPEN QUESTIONS SUMMARY (for easy reference)
+------------------------------------------------------------------------
+
+Game abstraction:
+  Q1.  Does trick-play order within a trick matter strategically?
+  Q2.  How far back does discard pile history matter in Rummy?
+  Q3.  Should partner identity be explicitly encoded in partnership games?
+  Q4.  What game-state features are we completely missing?
+
+Action representation:
+  Q5.  Is 4-option bet sizing sufficient for poker?
+  Q6.  How should climbing game combos be represented?
+  Q7.  What's the minimum bid representation for bidding games?
+  Q8.  Are there action types we've omitted entirely?
+
+Reward structure:
+  Q9.  Should "shooting the moon" in Hearts have an explicit reward?
+  Q10. How should rewards be split between partners?
+  Q11. Can PPO learn Spades bag penalties from terminal reward alone?
+  Q12. What's the simplest reward for complex-scoring games (Canasta)?
+  Q13. Are there games where winning ≠ the right optimization target?
+
+Strategic assumptions:
+  Q14. Do the 6 category groupings make strategic sense?
+  Q15. Which games will be hardest to fit into a uniform representation?
+  Q16. Will self-play partnership games learn cooperative strategy?
+  Q17. Are there games where "win" is the wrong objective?
+
+Game selection:
+  Q18. Which game pairs have real strategic overlap vs. surface overlap?
+  Q19. Would you replace any game with a better category representative?
+  Q20. Are there card game categories we've completely missed?
+  Q21. Does FreeCell vs. Klondike grouping make sense?
+
+------------------------------------------------------------------------
+END OF DOCUMENT
+------------------------------------------------------------------------
