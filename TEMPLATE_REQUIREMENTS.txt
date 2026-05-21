@@ -147,9 +147,7 @@ Works on both mouse (desktop) and touch (mobile/tablet).
 Drag behavior:
   - Click/tap a card to select it (highlights it).
   - Drag it to a target zone.
-  - If the move is valid per the config rules: card moves, plays
-    a soft placement sound (optional, no sound library needed —
-    can be omitted).
+  - If the move is valid per the config rules: card moves.
   - If the move is invalid: card snaps back to original position,
     zone flashes red briefly.
 
