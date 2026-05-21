@@ -23,6 +23,18 @@ from typing import Optional
 
 import google.generativeai as genai
 
+# Auto-load .env file if it exists (so you don't need to export anything)
+def _load_dotenv() -> None:
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                os.environ.setdefault(key.strip(), value.strip())
+
+_load_dotenv()
+
 # ---------------------------------------------------------------------------
 # System prompt — tells Gemini the exact output format and schema
 # ---------------------------------------------------------------------------
