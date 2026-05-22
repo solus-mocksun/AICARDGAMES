@@ -1,36 +1,39 @@
 """
 env_builder/injector.py
 
-Takes a validated GameConfig dict and a template folder (or a single
-self-contained HTML file) and writes the config into the right place.
+Takes a validated GameConfig dict and a template (local folder, local HTML
+file, or GitHub repo URL) and writes the config into the right place.
 
-Supports two template styles:
+Supports three template sources:
 
-  Style A — Multi-file (your CardGameTable setup):
-    index.html + engine.js + style.css + config.json + server.js
-    The injector copies the whole folder and overwrites config.json.
+  GitHub URL  — "https://github.com/user/repo"
+    Downloads the repo as a ZIP, extracts it, copies it, writes config.json.
 
-  Style B — Single-file HTML (original spec):
-    One .html file with <script id="game-config"> embedded inside.
-    The injector copies the file and replaces the JSON block.
+  Local folder — "/path/to/CardGameTable"
+    Copies the folder and writes config.json. (Style A — multi-file)
 
-The style is detected automatically.
+  Local HTML file — "/path/to/template.html"
+    Copies the file and replaces <script id="game-config">. (Style B — single file)
 
 Usage:
     from env_builder.injector import inject_config
 
-    # Multi-file template folder:
-    output_dir = inject_config(config, "CardGameTable/", output_dir="games/")
+    # From GitHub:
+    out = inject_config(config, "https://github.com/solus-mocksun/Card_Game_Table_Templete")
 
-    # Single-file HTML:
-    output_path = inject_config(config, "template.html", output_dir="games/")
+    # From local folder:
+    out = inject_config(config, "/path/to/CardGameTable", output_dir="games/")
 """
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import shutil
+import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
 
 
@@ -47,31 +50,26 @@ _CONFIG_BLOCK_RE = re.compile(
 
 def inject_config(
     config: dict,
-    template_path: str | Path,
+    template: str | Path,
     output_dir: str | Path = "games/",
     output_filename: str | None = None,
 ) -> Path:
     """
     Inject a GameConfig dict into a copy of the template.
 
-    Auto-detects whether template_path is a folder (multi-file style)
-    or a single .html file (embedded style).
+    template can be:
+      - A GitHub URL  : "https://github.com/user/repo"
+      - A local folder: "/path/to/CardGameTable"
+      - A local .html : "/path/to/template.html"
 
-    Args:
-        config:           Validated GameConfig dict.
-        template_path:    Path to the template folder OR a single .html file.
-        output_dir:       Parent directory where the output is written.
-        output_filename:  Override the output folder/file name.
-                          Defaults to the sanitised game name.
-
-    Returns:
-        Path to the output — either a folder (multi-file) or .html file (single).
-
-    Raises:
-        FileNotFoundError: If template_path does not exist.
-        ValueError:        If a single .html has no <script id="game-config"> block.
+    Returns the path to the output folder or file.
     """
-    template_path = Path(template_path)
+    template_str = str(template)
+
+    if template_str.startswith("https://github.com") or template_str.startswith("http://github.com"):
+        return _inject_from_github(config, template_str, output_dir, output_filename)
+
+    template_path = Path(template_str)
     if not template_path.exists():
         raise FileNotFoundError(f"Template not found: {template_path}")
 
@@ -83,8 +81,7 @@ def inject_config(
 
 def extract_config(path: str | Path) -> dict:
     """
-    Read config back out of a generated game.
-    Works with both a game folder (reads config.json) and a single .html file.
+    Read config back out of a generated game folder or HTML file.
     """
     path = Path(path)
     if path.is_dir():
@@ -101,7 +98,55 @@ def extract_config(path: str | Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Style A — multi-file folder (CardGameTable style)
+# GitHub download
+# ---------------------------------------------------------------------------
+
+def _inject_from_github(
+    config: dict,
+    github_url: str,
+    output_dir: str | Path,
+    output_name: str | None,
+) -> Path:
+    """
+    Download the GitHub repo as a ZIP, extract it, treat it like a local folder.
+    """
+    # Normalise URL — strip trailing slash and .git
+    base_url = github_url.rstrip("/").removesuffix(".git")
+
+    # Try main branch first, then master
+    for branch in ("main", "master"):
+        zip_url = f"{base_url}/archive/refs/heads/{branch}.zip"
+        try:
+            print(f"Downloading template from GitHub ({branch})...", flush=True)
+            with urllib.request.urlopen(zip_url, timeout=30) as resp:
+                zip_data = resp.read()
+            break
+        except Exception:
+            continue
+    else:
+        raise ConnectionError(
+            f"Could not download template from {github_url}\n"
+            "Make sure the repo is public and the URL is correct."
+        )
+
+    # Extract to a temp directory
+    with tempfile.TemporaryDirectory() as tmp:
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+            zf.extractall(tmp)
+
+        # GitHub ZIPs extract into a single subfolder: reponame-branchname/
+        extracted_dirs = [
+            d for d in Path(tmp).iterdir() if d.is_dir()
+        ]
+        if not extracted_dirs:
+            raise ValueError("Downloaded ZIP appears to be empty")
+
+        template_dir = extracted_dirs[0]
+        return _inject_multfile(config, template_dir, output_dir, output_name)
+
+
+# ---------------------------------------------------------------------------
+# Style A — multi-file folder
 # ---------------------------------------------------------------------------
 
 def _inject_multfile(
@@ -110,10 +155,6 @@ def _inject_multfile(
     output_dir: str | Path,
     output_name: str | None,
 ) -> Path:
-    """
-    Copy the template folder into output_dir/<game_name>/ and
-    overwrite config.json with the new config.
-    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -123,20 +164,16 @@ def _inject_multfile(
 
     dest = output_dir / output_name
 
-    # Copy the whole template folder fresh each time
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(template_dir, dest)
 
-    # Overwrite config.json with the new game config
-    config_path = dest / "config.json"
-    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-
+    (dest / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     return dest
 
 
 # ---------------------------------------------------------------------------
-# Style B — single self-contained HTML file
+# Style B — single HTML file
 # ---------------------------------------------------------------------------
 
 def _inject_singlefile(
@@ -145,15 +182,11 @@ def _inject_singlefile(
     output_dir: str | Path,
     output_filename: str | None,
 ) -> Path:
-    """
-    Copy the template .html and replace the <script id="game-config"> block.
-    """
     html = template_file.read_text(encoding="utf-8")
 
     if not _CONFIG_BLOCK_RE.search(html):
         raise ValueError(
-            f"Template {template_file} has no <script id=\"game-config\"> block. "
-            "Make sure the template follows the required structure."
+            f"Template {template_file} has no <script id=\"game-config\"> block."
         )
 
     json_str = json.dumps(config, indent=2)

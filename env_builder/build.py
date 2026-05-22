@@ -127,8 +127,8 @@ def main() -> None:
 
     p.add_argument(
         "--template",
-        default="template.html",
-        help="Path to template.html (default: template.html)",
+        default="https://github.com/solus-mocksun/Card_Game_Table_Templete",
+        help="Template source: GitHub URL or local path (default: Card_Game_Table_Templete repo)",
     )
     p.add_argument(
         "--output-dir",
