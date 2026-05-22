@@ -1,0 +1,14 @@
+# Training dependencies — run on local GPU machine, NOT on Railway
+# Install with: pip3 install -r requirements-training.txt
+
+torch>=2.3.0
+numpy>=1.26.0
+rlcard>=1.2.0
+pettingzoo>=1.24.0
+gymnasium>=0.29.0
+wandb>=0.17.0
+pyyaml>=6.0
+tqdm>=4.66
+rich>=13.0
+einops>=0.8.0
+pytest>=8.0
