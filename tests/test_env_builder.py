@@ -262,3 +262,71 @@ class TestInjector:
             output_dir=tmp_path, output_filename="my_custom.html"
         )
         assert out.name == "my_custom.html"
+
+
+# ---------------------------------------------------------------------------
+# Injector tests — multi-file folder style (CardGameTable layout)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def template_folder(tmp_path):
+    """Fake multi-file template folder mimicking CardGameTable structure."""
+    folder = tmp_path / "CardGameTable"
+    folder.mkdir()
+    (folder / "index.html").write_text("<html><body></body></html>")
+    (folder / "engine.js").write_text("/* engine */")
+    (folder / "style.css").write_text("body{}")
+    (folder / "server.js").write_text("// server")
+    (folder / "config.json").write_text('{"game_name": "DEFAULT"}')
+    return folder
+
+
+class TestInjectorMultiFile:
+    def _config(self):
+        return {
+            "game_name": "Spades",
+            "decks": 1,
+            "include_jokers": False,
+            "players": 4,
+            "zones": [],
+            "deal": [],
+            "valid_moves": [],
+            "win_condition": "highest_score",
+        }
+
+    def test_output_folder_is_created(self, template_folder, tmp_path):
+        from env_builder.injector import inject_config
+        out = inject_config(self._config(), template_folder, output_dir=tmp_path)
+        assert out.is_dir()
+
+    def test_config_json_written(self, template_folder, tmp_path):
+        from env_builder.injector import inject_config
+        out = inject_config(self._config(), template_folder, output_dir=tmp_path)
+        cfg = json.loads((out / "config.json").read_text())
+        assert cfg["game_name"] == "Spades"
+
+    def test_old_config_replaced(self, template_folder, tmp_path):
+        from env_builder.injector import inject_config
+        out = inject_config(self._config(), template_folder, output_dir=tmp_path)
+        cfg = json.loads((out / "config.json").read_text())
+        assert cfg["game_name"] != "DEFAULT"
+
+    def test_other_files_copied(self, template_folder, tmp_path):
+        from env_builder.injector import inject_config
+        out = inject_config(self._config(), template_folder, output_dir=tmp_path)
+        assert (out / "index.html").exists()
+        assert (out / "engine.js").exists()
+        assert (out / "style.css").exists()
+        assert (out / "server.js").exists()
+
+    def test_folder_named_after_game(self, template_folder, tmp_path):
+        from env_builder.injector import inject_config
+        out = inject_config(self._config(), template_folder, output_dir=tmp_path)
+        assert out.name == "spades"
+
+    def test_extract_config_from_folder(self, template_folder, tmp_path):
+        from env_builder.injector import inject_config, extract_config
+        out = inject_config(self._config(), template_folder, output_dir=tmp_path)
+        recovered = extract_config(out)
+        assert recovered["game_name"] == "Spades"
+        assert recovered["players"] == 4
