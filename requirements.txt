@@ -18,6 +18,7 @@ einops>=0.8.0
 
 # Environment builder (rulebook → game HTML)
 anthropic>=0.40.0
+pypdf>=4.0.0
 
 # PvP server (built next)
 fastapi>=0.111.0

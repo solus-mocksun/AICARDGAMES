@@ -21,6 +21,29 @@ import os
 from pathlib import Path
 from typing import Optional
 
+
+def _read_file(path: Path) -> str:
+    """Read text from .txt or .pdf files."""
+    if path.suffix.lower() == ".pdf":
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise ImportError(
+                "pypdf is required to read PDF files.\n"
+                "Install it with: pip3 install pypdf"
+            )
+        reader = PdfReader(str(path))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        text = "\n\n".join(pages).strip()
+        if not text:
+            raise ValueError(
+                f"Could not extract text from {path.name}. "
+                "The PDF may be scanned/image-based. Convert it to .txt first."
+            )
+        return text
+    else:
+        return path.read_text(encoding="utf-8")
+
 # Auto-load .env file so you don't need to export anything in the terminal
 def _load_dotenv() -> None:
     env_path = Path(__file__).parent.parent / ".env"
@@ -242,7 +265,7 @@ def parse_rulebook(
         path = Path(filepath)
         if not path.exists():
             raise FileNotFoundError(f"Rulebook not found: {filepath}")
-        rulebook_text = path.read_text(encoding="utf-8").strip()
+        rulebook_text = _read_file(path).strip()
     else:
         rulebook_text = text.strip()
 
