@@ -10,8 +10,8 @@ Usage:
     config = parse_rulebook("rulebooks/hearts.txt")
     config = parse_rulebook(text="Players take turns playing cards...")
 
-Set your key:
-    export GEMINI_API_KEY="your-key-from-aistudio.google.com"
+Set your key in .env:
+    GEMINI_API_KEY=your-key-from-aistudio.google.com
 """
 
 from __future__ import annotations
@@ -20,8 +20,6 @@ import json
 import os
 from pathlib import Path
 from typing import Optional
-
-import google.generativeai as genai
 
 # Auto-load .env file if it exists (so you don't need to export anything)
 def _load_dotenv() -> None:
@@ -34,6 +32,9 @@ def _load_dotenv() -> None:
                 os.environ.setdefault(key.strip(), value.strip())
 
 _load_dotenv()
+
+from google import genai
+from google.genai import types
 
 # ---------------------------------------------------------------------------
 # System prompt — tells Gemini the exact output format and schema
@@ -242,7 +243,6 @@ def parse_rulebook(
     if filepath is not None and text is not None:
         raise ValueError("Provide either filepath= or text=, not both")
 
-    # Read file if path given
     if filepath is not None:
         path = Path(filepath)
         if not path.exists():
@@ -254,41 +254,40 @@ def parse_rulebook(
     if not rulebook_text:
         raise ValueError("Rulebook text is empty")
 
-    # Configure Gemini
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise EnvironmentError(
-            "GEMINI_API_KEY environment variable not set.\n"
+            "GEMINI_API_KEY not set.\n"
+            "Add it to your .env file: GEMINI_API_KEY=your-key\n"
             "Get a free key at: https://aistudio.google.com/apikey"
         )
-    genai.configure(api_key=api_key)
 
-    # Build the model with system instruction
-    gemini_model = genai.GenerativeModel(
-        model_name=model,
-        system_instruction=SYSTEM_PROMPT,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.2,      # low = more deterministic JSON output
-            max_output_tokens=4096,
-        ),
-    )
-
-    # Start a chat session with the few-shot example pre-loaded
-    chat = gemini_model.start_chat(history=[
-        {"role": "user",  "parts": [FEW_SHOT_USER]},
-        {"role": "model", "parts": [FEW_SHOT_ASSISTANT]},
-    ])
+    client = genai.Client(api_key=api_key)
 
     user_message = f"RULEBOOK:\n{rulebook_text}"
 
     if verbose:
         print(f"Parsing rulebook with Gemini ({model})...\n", flush=True)
 
-    # Stream the response
-    response = chat.send_message(user_message, stream=True)
+    # Build conversation history with the few-shot example
+    history = [
+        types.Content(role="user",  parts=[types.Part(text=FEW_SHOT_USER)]),
+        types.Content(role="model", parts=[types.Part(text=FEW_SHOT_ASSISTANT)]),
+        types.Content(role="user",  parts=[types.Part(text=user_message)]),
+    ]
 
     collected_text = ""
-    for chunk in response:
+
+    # Stream the response
+    for chunk in client.models.generate_content_stream(
+        model=model,
+        contents=history,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0.2,
+            max_output_tokens=4096,
+        ),
+    ):
         if chunk.text:
             collected_text += chunk.text
             if verbose:
@@ -308,7 +307,6 @@ def parse_rulebook(
         raw_output = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
         raw_output = raw_output.strip()
 
-    # Parse JSON
     try:
         config = json.loads(raw_output)
     except json.JSONDecodeError as e:
