@@ -30,10 +30,12 @@ from env_builder.validator import validate_config, print_validation_report
 from env_builder.injector import inject_config
 
 
+GITHUB_TEMPLATE = "https://github.com/solus-mocksun/Card_Game_Table_Templete"
+
 def build_game(
     rulebook: Optional[str] = None,
     text: Optional[str] = None,
-    template: str = "template.html",
+    template: str = GITHUB_TEMPLATE,
     output_dir: str = "games/",
     output_filename: Optional[str] = None,
     save_config: bool = False,
