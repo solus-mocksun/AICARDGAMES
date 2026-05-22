@@ -10,26 +10,65 @@ Railway: set ANTHROPIC_API_KEY env var, deploy from GitHub
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import os
 import queue
+import secrets
 import sys
 import tempfile
 import threading
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from env_builder.build import build_game
+from pvp_server.ws_handler import manager as pvp_manager, pvp_ws_endpoint
 
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Card Game Builder")
+
+
+# ---------------------------------------------------------------------------
+# Basic-Auth middleware
+# Only active when AUTH_USER and AUTH_PASS are set as environment variables.
+# Leave them unset for local development — auth is skipped automatically.
+# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next) -> Response:
+    auth_pass = os.environ.get("AUTH_PASS", "")
+
+    # Auth disabled if AUTH_PASS is not set (safe local default)
+    if not auth_pass:
+        return await call_next(request)
+
+    # WebSocket upgrade — skip (browser can't send Basic Auth on WS)
+    if request.headers.get("upgrade", "").lower() == "websocket":
+        return await call_next(request)
+
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Basic "):
+        try:
+            decoded  = base64.b64decode(auth_header[6:]).decode()
+            _, _, password = decoded.partition(":")
+            if secrets.compare_digest(password.encode(), auth_pass.encode()):
+                return await call_next(request)
+        except Exception:
+            pass
+
+    return Response(
+        content="Unauthorized",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Card Game Builder"'},
+    )
+
 
 GAMES_DIR = Path("games")
 GAMES_DIR.mkdir(exist_ok=True)
@@ -50,6 +89,21 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Routes — PvP
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/pvp")
+async def pvp_websocket(ws: WebSocket):
+    await pvp_ws_endpoint(ws)
+
+
+@app.get("/api/rooms")
+async def list_rooms():
+    """List all active PvP rooms (waiting or in-progress)."""
+    return pvp_manager.list_rooms()
 
 
 # ---------------------------------------------------------------------------
