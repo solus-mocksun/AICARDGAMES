@@ -89,7 +89,7 @@ def build_game(
 
     html_path = inject_config(
         config,
-        template_path=template,
+        template=template,
         output_dir=output_dir,
         output_filename=output_filename,
     )
