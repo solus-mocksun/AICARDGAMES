@@ -1,7 +1,7 @@
 """
 env_builder/parser.py
 
-Reads a card game rulebook (file path or raw text) and uses the Gemini API
+Reads a card game rulebook (file path or raw text) and uses the Claude API
 to produce a valid GameConfig JSON that can be injected into the HTML template.
 
 Usage:
@@ -11,7 +11,7 @@ Usage:
     config = parse_rulebook(text="Players take turns playing cards...")
 
 Set your key in .env:
-    GEMINI_API_KEY=your-key-from-aistudio.google.com
+    ANTHROPIC_API_KEY=your-key-from-console.anthropic.com
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-# Auto-load .env file if it exists (so you don't need to export anything)
+# Auto-load .env file so you don't need to export anything in the terminal
 def _load_dotenv() -> None:
     env_path = Path(__file__).parent.parent / ".env"
     if env_path.exists():
@@ -33,11 +33,11 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-from google import genai
-from google.genai import types
+import anthropic
 
 # ---------------------------------------------------------------------------
-# System prompt — tells Gemini the exact output format and schema
+# System prompt — large and stable, marked for prompt caching so repeated
+# calls (retries, re-parses) don't re-tokenise the whole thing each time.
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are a card game rule parser. Your job is to read a card game rulebook and output a single valid JSON object that configures an HTML card game table engine.
@@ -139,7 +139,7 @@ Every field marked REQUIRED must be present. Optional fields can be omitted.
 """
 
 # ---------------------------------------------------------------------------
-# Few-shot example so Gemini understands the exact output format
+# Few-shot example — also cached since it never changes
 # ---------------------------------------------------------------------------
 
 FEW_SHOT_USER = """RULEBOOK:
@@ -207,12 +207,7 @@ FEW_SHOT_ASSISTANT = """{
   "category_hint": "gambling"
 }"""
 
-# ---------------------------------------------------------------------------
-# Default model — gemini-2.0-flash is free tier and fast
-# For better quality on complex rulebooks: "gemini-2.5-pro"
-# ---------------------------------------------------------------------------
-
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "claude-opus-4-7"
 
 
 def parse_rulebook(
@@ -222,20 +217,20 @@ def parse_rulebook(
     model: str = DEFAULT_MODEL,
 ) -> dict:
     """
-    Parse a card game rulebook into a GameConfig dict.
+    Parse a card game rulebook into a GameConfig dict using the Claude API.
 
     Args:
         filepath: Path to a .txt rulebook file. Mutually exclusive with text.
         text:     Raw rulebook text string. Mutually exclusive with filepath.
         verbose:  Stream tokens to stdout while generating (default True).
-        model:    Gemini model to use. Default: gemini-2.0-flash (free tier).
+        model:    Claude model to use. Default: claude-opus-4-7.
 
     Returns:
         A dict matching the GameConfig schema, ready for json.dumps().
 
     Raises:
         ValueError: If neither or both of filepath/text are provided.
-        ValueError: If the Gemini response is not valid JSON.
+        ValueError: If the Claude response is not valid JSON.
         FileNotFoundError: If filepath does not exist.
     """
     if filepath is None and text is None:
@@ -254,54 +249,85 @@ def parse_rulebook(
     if not rulebook_text:
         raise ValueError("Rulebook text is empty")
 
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise EnvironmentError(
-            "GEMINI_API_KEY not set.\n"
-            "Add it to your .env file: GEMINI_API_KEY=your-key\n"
-            "Get a free key at: https://aistudio.google.com/apikey"
+            "ANTHROPIC_API_KEY not set.\n"
+            "Add it to your .env file: ANTHROPIC_API_KEY=your-key\n"
+            "Get a key at: https://console.anthropic.com"
         )
 
-    client = genai.Client(api_key=api_key)
-
-    user_message = f"RULEBOOK:\n{rulebook_text}"
+    client = anthropic.Anthropic(api_key=api_key)
 
     if verbose:
-        print(f"Parsing rulebook with Gemini ({model})...\n", flush=True)
-
-    # Build conversation history with the few-shot example
-    history = [
-        types.Content(role="user",  parts=[types.Part(text=FEW_SHOT_USER)]),
-        types.Content(role="model", parts=[types.Part(text=FEW_SHOT_ASSISTANT)]),
-        types.Content(role="user",  parts=[types.Part(text=user_message)]),
-    ]
+        print(f"Parsing rulebook with Claude ({model})...\n", flush=True)
 
     collected_text = ""
 
-    # Stream the response
-    for chunk in client.models.generate_content_stream(
+    with client.messages.stream(
         model=model,
-        contents=history,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            temperature=0.2,
-            max_output_tokens=4096,
-        ),
-    ):
-        if chunk.text:
-            collected_text += chunk.text
-            if verbose:
-                print(chunk.text, end="", flush=True)
+        max_tokens=4096,
+        thinking={"type": "adaptive"},
+        system=[
+            {
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},  # cache the big schema prompt
+            }
+        ],
+        messages=[
+            # Few-shot example — cached since it never changes
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": FEW_SHOT_USER,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": FEW_SHOT_ASSISTANT,
+            },
+            # The actual rulebook
+            {
+                "role": "user",
+                "content": rulebook_text,
+            },
+        ],
+    ) as stream:
+        for event in stream:
+            if (
+                hasattr(event, "type")
+                and event.type == "content_block_delta"
+                and hasattr(event.delta, "type")
+                and event.delta.type == "text_delta"
+            ):
+                chunk = event.delta.text
+                collected_text += chunk
+                if verbose:
+                    print(chunk, end="", flush=True)
+
+        final_message = stream.get_final_message()
 
     if verbose:
         print("\n", flush=True)
 
-    raw_output = collected_text.strip()
+    # Extract text from final message (skip thinking blocks)
+    raw_output = ""
+    for block in final_message.content:
+        if hasattr(block, "text"):
+            raw_output = block.text
+            break
 
     if not raw_output:
-        raise ValueError("Gemini returned no text content")
+        raise ValueError("Claude returned no text content")
 
-    # Strip markdown fences if Gemini added them despite instructions
+    raw_output = raw_output.strip()
+
+    # Strip markdown fences if Claude added them despite instructions
     if raw_output.startswith("```"):
         lines = raw_output.split("\n")
         raw_output = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
@@ -311,7 +337,7 @@ def parse_rulebook(
         config = json.loads(raw_output)
     except json.JSONDecodeError as e:
         raise ValueError(
-            f"Gemini output was not valid JSON.\n"
+            f"Claude output was not valid JSON.\n"
             f"Error: {e}\n"
             f"Raw output:\n{raw_output}"
         )
@@ -326,10 +352,9 @@ def parse_rulebook(
 
 
 # ---------------------------------------------------------------------------
-# CLI usage:
+# CLI:
 #   python -m env_builder.parser hearts.txt
 #   python -m env_builder.parser --text "Snap is a game where..."
-#   python -m env_builder.parser hearts.txt --model gemini-2.5-pro
 # ---------------------------------------------------------------------------
 
 def main() -> None:
@@ -342,7 +367,7 @@ def main() -> None:
     group.add_argument("filepath", nargs="?", help="Path to .txt rulebook file")
     group.add_argument("--text", help="Inline rulebook text (use quotes)")
     p.add_argument("--model", default=DEFAULT_MODEL,
-                   help=f"Gemini model (default: {DEFAULT_MODEL})")
+                   help=f"Claude model (default: {DEFAULT_MODEL})")
     p.add_argument("--output", "-o",
                    help="Save JSON to this file (default: print to stdout)")
     p.add_argument("--quiet", "-q", action="store_true",
