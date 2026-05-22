@@ -1,0 +1,8 @@
+# Web server dependencies only (used by Railway)
+# Training dependencies (torch, rlcard, etc.) are NOT needed here
+
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+anthropic>=0.40.0
+pypdf>=4.0.0
