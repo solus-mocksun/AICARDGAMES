@@ -88,7 +88,10 @@ async def root():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "auth_enabled": bool(os.environ.get("AUTH_PASS", "")),
+    }
 
 
 # ---------------------------------------------------------------------------
